@@ -244,3 +244,11 @@
   gap: 20px;
 }
 .tv-layout .android-source-page .sources-detail .description-toggle { min-height: 52px; }
+
+/* Third-party source download controls (modified build). */
+.sources-download-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.sources-batch { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; margin: 6px 0 10px; border: 1px solid var(--border, #24272d); border-radius: 10px; background: var(--surface, #17191d); }
+.sources-batch label { display: inline-flex; gap: 6px; align-items: center; font-size: .875rem; }
+.sources-batch input[type="number"] { width: 68px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, #24272d); background: var(--inset, #1e2126); color: var(--text, #f2f3f5); }
+.sources-batch progress { width: 100%; height: 8px; }
+.sources-batch .sources-note { flex-basis: 100%; margin: 2px 0 0; font-size: .8125rem; color: var(--muted, #9aa0a8); }
