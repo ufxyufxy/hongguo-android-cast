@@ -8,7 +8,7 @@ const METHODS = new Set([
   'getPlaybackCache', 'clearPlaybackCache',
   'appRequest', 'appDeviceIdentity', 'appRegisteredModel', 'appResolveResult', 'getPlaybackOptions', 'setPlaybackOptions',
   'getSearchHistory', 'addSearchHistory', 'removeSearchHistory', 'clearSearchHistory', 'searchQuery',
-  'sourceService',
+  'resetPlaybackIdentity', 'sourceService',
 ]);
 const pending = new Map();
 let sequence = 0;
