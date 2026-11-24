@@ -5,14 +5,23 @@ import android.util.Log;
 
 /** Selects the on-device library before either activities or cast services start. */
 public final class HongguoApplication extends Application {
+    private static volatile android.content.Context appContext;
+
+    /** App-scoped context for on-device caches used outside activities. */
+    static android.content.Context context() { return appContext; }
+
     @Override public void onCreate() {
         super.onCreate();
+        appContext = this;
         // The account chain compiles against plain JVM stubs in offline harnesses; the real sink lives here.
         AccountLog.setSink((level, tag, message) -> { if ("E".equals(level)) Log.e(tag, message); else Log.w(tag, message); });
         AccountSync.init(this);
         // The registered playback identity survives process restarts on disk, like the
         // working TV clients' device store; a served identity keeps being served.
         RegisteredPlaybackModel.identityStore(new java.io.File(getFilesDir(), "registered-identity.json"));
+        // The SDK playback route verifies and caches its inputs off the start thread; on any device
+        // that cannot run it this is a no-op and playback keeps the signed-request ladder.
+        SdkPlaybackClient.install(new java.io.File(getFilesDir(), "sdk-playback"));
         // Pre-register (or reload) the identity at process start so the first play tap
         // does not pay the registration round trip; a persisted identity loads locally.
         new Thread(() -> {
