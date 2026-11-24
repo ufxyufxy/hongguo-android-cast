@@ -587,7 +587,18 @@ final class SourceService {
                 .put("dramaTitle", title).put("chapter", episode.chapter)
                 .put("index", episode.display.getInt("index")).put("total", detail.episodes.size())
                 .put("outPath", "").put("releaseStatus", detail.releaseStatus).put("downloadQuality", 0);
-            JSONObject media = object(invoke("resolveMedia", deadline, task));
+            JSONObject media;
+            SourceHlsCache hlsCache = SourceHlsCache.get(context);
+            String cached = hlsCache.loadDescriptor(id, request.value, request.episode);
+            try {
+                media = object(invoke("resolveMedia", deadline, task));
+                if (cached == null) hlsCache.saveDescriptor(id, request.value, request.episode, media.toString());
+            } catch (Exception resolveError) {
+                // Offline / transient resolve failure: replay a previously cached descriptor.
+                // Segments themselves are served by SourceHlsCache inside the player.
+                if (cached == null) throw resolveError;
+                media = new JSONObject(cached);
+            }
             return new Resolution(detail, episode, title, media);
         }
         private static final class Resolution {
