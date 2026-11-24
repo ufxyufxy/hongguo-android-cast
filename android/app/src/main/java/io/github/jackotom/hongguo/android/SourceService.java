@@ -225,6 +225,11 @@ final class SourceService {
             else job.reply.failure("SOURCE_ERROR", "来源请求未完成，请检查网络或稍后重试");
             return;
         }
+        if (value instanceof DownloadInfo) {
+            try { job.reply.success(((DownloadInfo) value).json(), null); }
+            catch (Exception error) { job.reply.failure("SOURCE_MEDIA_INVALID", "下载片源信息无效"); }
+            return;
+        }
         if (!(value instanceof Playback)) {
             if (job.accountTransition) cancel(job.lane);
             job.reply.success(value, null);
@@ -288,6 +293,7 @@ final class SourceService {
                 case "search": return new Request(op, string(params, "keyword", 256, false), "", page(params));
                 case "detail": return new Request(op, seriesKey(source, string(params, "seriesId", 512, false)), "", 1);
                 case "play":
+                case "prepareDownload":
                     String episode = string(params, "episodeId", 68, false);
                     if (!episode.matches("ep_[0-9a-f]{64}")) throw invalid();
                     Request play = new Request(op, seriesKey(source, string(params, "seriesId", 512, false)), episode, 1);
@@ -434,6 +440,22 @@ final class SourceService {
         final JSONArray variants;
         Playback(String title, JSONObject media, JSONArray variants) { this.title = title; this.media = media; this.variants = variants; }
     }
+    /** Resolved media handed to the native downloader instead of the online player. */
+    private static final class DownloadInfo {
+        final String sourceId, seriesKey, title, chapterTitle;
+        final int index, total;
+        final JSONObject media;
+        DownloadInfo(String sourceId, String seriesKey, String title, String chapterTitle, int index, int total, JSONObject media) {
+            this.sourceId = sourceId; this.seriesKey = seriesKey; this.title = title; this.chapterTitle = chapterTitle;
+            this.index = index; this.total = total; this.media = media;
+        }
+        JSONObject json() throws JSONException {
+            JSONObject out = new JSONObject().put("sourceId", sourceId).put("seriesKey", seriesKey)
+                .put("title", title).put("chapterTitle", chapterTitle).put("index", index).put("total", total)
+                .put("media", media);
+            return out;
+        }
+    }
     private static final class Episode {
         final JSONObject chapter;
         final JSONObject display;
@@ -544,28 +566,47 @@ final class SourceService {
                 case "search": return listing(invoke("search", deadline, request.page, request.value));
                 case "detail": return fetchDetail(request.value, deadline).display;
                 case "account": return account(request, deadline);
-                case "play": {
-                    Detail detail = details.get(request.value);
-                    if (detail == null || detail.expires <= System.nanoTime()) {
-                        // Never refetch or resolve an episode ID that the app did not issue.
-                        throw new Failure("SOURCE_DETAIL_EXPIRED", "分集列表已失效，请返回后重新打开详情");
-                    }
-                    Episode episode = detail.episodes.get(request.episode);
-                    if (episode == null || !episode.display.getBoolean("playable"))
-                        throw new Failure("EPISODE_NOT_OPEN", "此分集未开放或不属于当前剧集");
-                    if (request.variant >= episode.issuedVariants) {
-                        throw new Failure("SOURCE_VARIANT_INVALID", "请先播放当前分集，再选择该分集的线路");
-                    }
-                    String title = detail.display.getString("title");
-                    JSONObject task = new JSONObject().put("dramaId", id + ":" + request.value)
-                        .put("dramaTitle", title).put("chapter", episode.chapter)
-                        .put("index", episode.display.getInt("index")).put("total", detail.episodes.size())
-                        .put("outPath", "").put("releaseStatus", detail.releaseStatus).put("downloadQuality", 0);
-                    JSONObject media = object(invoke("resolveMedia", deadline, task));
-                    return selectMedia(media, episode, request.variant, text(title + " · " + episode.display.getString("title"), 512));
-                }
+                case "play": return resolveForPlayback(request, deadline);
+                case "prepareDownload": return resolveForDownload(request, deadline);
                 default: throw invalid();
             }
+        }
+        /** Shared: validate the issued detail/episode and resolve its media task. */
+        private Resolution resolve(long deadline, Request request) throws Exception {
+            Detail detail = details.get(request.value);
+            if (detail == null || detail.expires <= System.nanoTime()) {
+                throw new Failure("SOURCE_DETAIL_EXPIRED", "分集列表已失效，请返回后重新打开详情");
+            }
+            Episode episode = detail.episodes.get(request.episode);
+            if (episode == null || !episode.display.getBoolean("playable"))
+                throw new Failure("EPISODE_NOT_OPEN", "此分集未开放或不属于当前剧集");
+            if (request.variant >= episode.issuedVariants && request.variant >= 0)
+                throw new Failure("SOURCE_VARIANT_INVALID", "请先播放当前分集，再选择该分集的线路");
+            String title = detail.display.getString("title");
+            JSONObject task = new JSONObject().put("dramaId", id + ":" + request.value)
+                .put("dramaTitle", title).put("chapter", episode.chapter)
+                .put("index", episode.display.getInt("index")).put("total", detail.episodes.size())
+                .put("outPath", "").put("releaseStatus", detail.releaseStatus).put("downloadQuality", 0);
+            JSONObject media = object(invoke("resolveMedia", deadline, task));
+            return new Resolution(detail, episode, title, media);
+        }
+        private static final class Resolution {
+            final Detail detail; final Episode episode; final String title; final JSONObject media;
+            Resolution(Detail detail, Episode episode, String title, JSONObject media) {
+                this.detail = detail; this.episode = episode; this.title = title; this.media = media;
+            }
+        }
+        private Playback resolveForPlayback(Request request, long deadline) throws Exception {
+            Resolution r = resolve(deadline, request);
+            return selectMedia(r.media, r.episode, request.variant, text(r.title + " · " + r.episode.display.getString("title"), 512));
+        }
+        private DownloadInfo resolveForDownload(Request request, long deadline) throws Exception {
+            Resolution r = resolve(deadline, request);
+            // selectMedia validates the address and picks the requested variant line.
+            String chapterTitle = text(r.title + " · " + r.episode.display.getString("title"), 512);
+            Playback picked = selectMedia(r.media, r.episode, request.variant, chapterTitle);
+            return new DownloadInfo(id, request.value, r.title, chapterTitle,
+                r.episode.display.getInt("index"), r.detail.episodes.size(), picked.media);
         }
         Object invoke(String method, long deadline, Object... args) throws Exception {
             JSONArray input = new JSONArray();
