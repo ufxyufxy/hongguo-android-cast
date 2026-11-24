@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
+import android.widget.Toast;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
@@ -33,6 +34,10 @@ final class AppUpdater {
     private final ScheduledExecutorService deadlines = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "hongguo-update-deadlines"); t.setDaemon(true); return t; });
     private volatile int downloadAttempt, manifestAttempt;
     private static final java.util.concurrent.atomic.AtomicLong manifestNonces=new java.util.concurrent.atomic.AtomicLong();
+    /** Modified build: signed with a separate/debug key, so official-channel APKs cannot be
+     *  installed over it. Keep the ability to CHECK upstream releases, but block the download
+     *  path with an explanation instead of failing late at signature verification. */
+    private static final boolean MODIFIED_BUILD = true;
     private String checkSource = "";
     private int checkRouteIndex, checkRouteCount;
     private final Object downloadStateLock = new Object();
@@ -207,6 +212,10 @@ final class AppUpdater {
     private boolean stateWasReady() { return candidate != null && candidate.same(verifiedCandidate) && apk.isFile() && apk.length() == candidate.bytes; }
     private void download() {
         if (destroyed || busy || candidate == null || !state.equals("available") && !state.equals("error")) return;
+        if (MODIFIED_BUILD) {
+            host.runOnUiThread(() -> Toast.makeText(host, "这是改造版，无法直接安装官方更新包。检测到新版本后请重新编译改造版。", Toast.LENGTH_LONG).show());
+            return;
+        }
         Candidate target = candidate;
         if (target.code <= installedCode) return;
         dismissPrompt(); busy = true; state = "downloading"; message = "正在选择更新下载线路…"; downloaded = 0; downloadSource = ""; downloadRouteIndex = downloadRouteCount = 0; publish();
@@ -296,7 +305,7 @@ final class AppUpdater {
             manualPrompt = false; promptedCode = candidate.code;
             Candidate target = candidate;
             prompt = new AlertDialog.Builder(host).setTitle("发现新版本 " + target.name)
-                .setMessage(target.notes.isEmpty() ? "下载校验后，由系统确认安装；观看记录会保留。" : target.notes)
+                .setMessage("这是改造版，与官方更新包签名不同，无法直接安装；检测到新版本后请重新编译改造版。\n\n" + (target.notes.isEmpty() ? "（上游未提供更新说明）" : "上游更新说明：" + target.notes))
                 .setNegativeButton("稍后", (d, w) -> prefs.edit().putInt("skipped_code", target.code).apply())
                 .setPositiveButton("下载更新", (d, w) -> download()).create();
         } else if (page == null && state.equals("ready") && verifiedCandidate != null && apk.isFile() && readyPromptedCode != candidate.code) {
