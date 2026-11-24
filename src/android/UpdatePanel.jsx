@@ -37,8 +37,9 @@ export default function UpdatePanel() {
     <p role="status" aria-live="polite">{value?.message || '正在读取更新状态…'}</p>
     {error && <p className="account-error" role="alert">{error}</p>}
     {value?.versionName && value.versionCode > value.installedCode && <div className="update-available" role="status">
-      <strong>新版本 {value.versionName} 可下载</strong>
-      {value.notes && <p>{value.notes}</p>}
+      <strong>上游新版本 {value.versionName} 已发布</strong>
+      <p>当前为改造版（独立签名），无法直接安装官方更新包；请基于新版重新编译改造版后再升级。</p>
+      {value.notes && <p>上游更新说明：{value.notes}</p>}
     </div>}
     {['downloading', 'verifying'].includes(value?.state) && <div><progress aria-label="更新下载进度" max="100" value={updateProgress(value)} /><span> {updateProgress(value)}%</span></div>}
     <div className="account-actions">
