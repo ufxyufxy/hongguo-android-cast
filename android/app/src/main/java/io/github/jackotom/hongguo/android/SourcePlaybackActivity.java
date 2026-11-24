@@ -108,7 +108,8 @@ public final class SourcePlaybackActivity extends Activity {
     private TextView timing;
     private ProgressBar busy;
     private Button mute, playPause, fullScreen, returnToEpisodes, back;
-    private Button previous, next, select, autoplayButton, speedButton;
+    private Button previous, next, select, autoplayButton, speedButton, cacheButton;
+    private SourceHlsPrefetch prefetch;
     private SeekBar timeBar;
     private PlayerHud controlsHud;
     private int hudDialogs;
@@ -289,6 +290,9 @@ public final class SourcePlaybackActivity extends Activity {
         fullScreen = control("全屏");
         fullScreen.setOnClickListener(v -> { showControls(); immersive = !immersive; applyWindowMode(); });
         if (!BuildConfig.IS_TV) options.addView(fullScreen, actionLayout);
+        cacheButton = control("缓存本集");
+        cacheButton.setOnClickListener(v -> startCacheEpisode());
+        options.addView(cacheButton, actionLayout);
         dock.addView(options, new LinearLayout.LayoutParams(-1, -2));
         screen.addView(dock, new LinearLayout.LayoutParams(-1, -2));
 
@@ -766,6 +770,42 @@ public final class SourcePlaybackActivity extends Activity {
                 .createMediaSource(item);
     }
 
+    /** Cache the whole HLS episode into the on-device cache for offline playback. */
+    private void startCacheEpisode() {
+        if (session == null || !session.active() || !session.hls) {
+            Toast.makeText(this, "当前来源不支持离线缓存", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        android.content.Context app = HongguoApplication.context();
+        if (app == null) { Toast.makeText(this, "缓存尚未就绪", Toast.LENGTH_SHORT).show(); return; }
+        if (prefetch != null) {
+            prefetch.cancel(); prefetch = null;
+            cacheButton.setText("缓存本集");
+            return;
+        }
+        final SourceHlsCache cache = SourceHlsCache.get(app);
+        final OkHttpClient http = client != null ? client : mediaClient();
+        cacheButton.setEnabled(false);
+        cacheButton.setText("缓存中…");
+        showFeedback("正在缓存本集到本机…", true, false);
+        prefetch = new SourceHlsPrefetch(session, http, cache, new SourceHlsPrefetch.Progress() {
+            @Override public void onProgress(int done, int total) {
+                main.post(() -> showFeedback("正在缓存 " + done + " / " + total + " 个分片…", true, false));
+            }
+            @Override public void onDone(boolean ok, String message) {
+                main.post(() -> {
+                    prefetch = null;
+                    cacheButton.setEnabled(true);
+                    cacheButton.setText("缓存本集");
+                    status.setVisibility(View.GONE);
+                    feedback.setVisibility(View.GONE);
+                    Toast.makeText(SourcePlaybackActivity.this, message, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+        prefetch.start();
+    }
+
     private void start() {
         OkHttpClient fixture = BuildConfig.DEBUG && FIXTURE_HOST.equals(session.url.getHost()) ? FIXTURE_CLIENT.getAndSet(null) : null;
         client = fixture == null ? mediaClient() : fixture;
@@ -852,6 +892,7 @@ public final class SourcePlaybackActivity extends Activity {
     @Override protected void onDestroy() {
         destroyed = true;
         main.removeCallbacksAndMessages(null);
+        if (prefetch != null) { prefetch.cancel(); prefetch = null; }
         if (session != null) SourcePlaybackSessions.close(session.id);
         if (controlsHud != null) controlsHud.destroy();
         playerView.setPlayer(null);
@@ -909,12 +950,15 @@ public final class SourcePlaybackActivity extends Activity {
         private Uri uri;
         private long remaining, byteLimit;
         private boolean started;
+        private final SourceHlsCache cache;
 
         SourceDataSource(SourcePlaybackSessions.Session session, OkHttpClient client, int type) {
             super(true);
             this.session = session;
             this.client = client;
             this.type = type;
+            android.content.Context app = HongguoApplication.context();
+            this.cache = session.hls && app != null ? SourceHlsCache.get(app) : null;
         }
 
         @Override public long open(DataSpec spec) throws IOException {
@@ -942,6 +986,35 @@ public final class SourcePlaybackActivity extends Activity {
             if (spec.position >= MAX_PROGRESSIVE || spec.length > maxBytes || type != C.DATA_TYPE_MEDIA && range)
                 throw new IOException("来源媒体范围无效");
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(type == C.DATA_TYPE_MEDIA && session.hls ? 60 : 30);
+            // Cache hit: serve the exact bytes captured on the first play, fully offline.
+            // Only whole-object GETs are cached; ranged/progressive requests keep the live path.
+            if (cache != null && !range && session.active()) {
+                InputStream cached = cache.read(session.sourceId, type, target);
+                if (cached != null) {
+                    try {
+                        ByteArrayOutputStream snapshot = new ByteArrayOutputStream();
+                        byte[] buffer = new byte[8192];
+                        int count;
+                        while ((count = cached.read(buffer)) != -1) {
+                            if (snapshot.size() + count > maxBytes) throw new UnsupportedMedia("来源媒体超过大小限制");
+                            snapshot.write(buffer, 0, count);
+                        }
+                        byte[] bytes = snapshot.toByteArray();
+                        if (type == C.DATA_TYPE_DRM && bytes.length != 16) throw new UnsupportedMedia("来源 HLS 密钥格式无效");
+                        if (type == C.DATA_TYPE_MANIFEST) {
+                            try { SourcePlaybackSessions.checkPlaylist(bytes); }
+                            catch (IOException invalid) { throw new UnsupportedMedia(invalid.getMessage()); }
+                        }
+                        stream = new ByteArrayInputStream(bytes);
+                        uri = Uri.parse(target.toASCIIString());
+                        remaining = bytes.length;
+                        byteLimit = bytes.length;
+                        started = true;
+                        transferStarted(spec);
+                        return bytes.length;
+                    } finally { try { cached.close(); } catch (IOException ignored) { } }
+                }
+            }
             while (true) {
                 if (!session.active()) throw new InterruptedIOException("来源播放已取消");
                 Request.Builder request = new Request.Builder().url(target.toASCIIString())
@@ -989,7 +1062,11 @@ public final class SourcePlaybackActivity extends Activity {
             long length = checkedLength(spec, body.contentLength());
             if (length > maxBytes) throw new UnsupportedMedia("来源媒体超过大小限制");
             stream = body.byteStream();
-            if (type == C.DATA_TYPE_MANIFEST || type == C.DATA_TYPE_DRM) {
+            // HLS responses (manifest, key and segments) are snapshotted so they can be
+            // written to the on-device cache and replayed offline through the same source
+            // pipeline with its header / key-authorization logic intact.
+            boolean snapshotForCache = cache != null && (type == C.DATA_TYPE_MANIFEST || type == C.DATA_TYPE_DRM || type == C.DATA_TYPE_MEDIA);
+            if (type == C.DATA_TYPE_MANIFEST || type == C.DATA_TYPE_DRM || snapshotForCache) {
                 ByteArrayOutputStream snapshot = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192];
                 int count;
@@ -1003,6 +1080,8 @@ public final class SourcePlaybackActivity extends Activity {
                     try { SourcePlaybackSessions.checkPlaylist(bytes); }
                     catch (IOException invalid) { throw new UnsupportedMedia(invalid.getMessage()); }
                 }
+                // Only whole-object GETs are cached (no ranged progressive requests).
+                if (snapshotForCache && !range) cache.write(session.sourceId, type, target, bytes);
                 stream = new ByteArrayInputStream(bytes);
                 length = bytes.length;
                 finishConnection();
