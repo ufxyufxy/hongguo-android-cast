@@ -219,6 +219,12 @@ function SourceBrowser({ api, source, PosterGrid, Status, onOpenHongguo, android
   const [accountRevision, setAccountRevision] = useState(0);
   const [detail, setDetail] = useState({ busy: false, data: null, error: '' });
   const [play, setPlay] = useState({ episodeId: null, error: '', variants: [], variant: '' });
+  const [downloadMode, setDownloadMode] = useState(false);
+  const [batch, setBatch] = useState({ running: false, done: 0, total: 0, failed: 0, message: '' });
+  const [batchPanel, setBatchPanel] = useState(false);
+  const [batchStart, setBatchStart] = useState('1');
+  const [batchEnd, setBatchEnd] = useState('1');
+  const batchStop = useRef(false);
   const categoryEpoch = useRef(0);
   const detailEpoch = useRef(0);
   const playEpoch = useRef(0);
@@ -317,6 +323,33 @@ function SourceBrowser({ api, source, PosterGrid, Status, onOpenHongguo, android
     }
     finally { if (epoch === playEpoch.current) playPending.current = false; }
   };
+  const canDownload = android && typeof api.download === 'function';
+  const downloadEpisode = async (episode, variant = '') => {
+    if (!canDownload || !detail.data || episode.playable !== true || batch.running) return;
+    try {
+      await api.download({ sourceId, seriesId: detail.data.seriesId, episodeId: episode.episodeId, variant });
+    } catch (error) {
+      setBatch(previous => ({ ...previous, message: `第 ${episode.index} 集下载入队失败：${failureText(error)}` }));
+    }
+  };
+  const startBatchDownload = async () => {
+    if (!canDownload || !detail.data || batch.running) return;
+    const episodes = detail.data.episodes || [];
+    const start = Math.max(1, Number(batchStart) || 1);
+    const end = Math.min(episodes.length, Number(batchEnd) || episodes.length);
+    const list = episodes.filter(item => item.index >= start && item.index <= end && item.playable === true);
+    if (!list.length) { setBatch(previous => ({ ...previous, message: '这个范围内没有可下载的分集' })); return; }
+    batchStop.current = false;
+    setBatch({ running: true, done: 0, total: list.length, failed: 0, message: '' });
+    let failed = 0;
+    for (const item of list) {
+      if (batchStop.current) break;
+      try { await api.download({ sourceId, seriesId: detail.data.seriesId, episodeId: item.episodeId }); }
+      catch (_) { failed++; }
+      setBatch(previous => ({ ...previous, done: previous.done + 1, failed }));
+    }
+    setBatch(previous => ({ ...previous, running: false, message: `批量下载完成：${list.length - failed} 集入队${failed ? `，${failed} 集失败` : ''}` }));
+  };
   const loadCatalog = id => { setCategory(id); setKeyword(''); setView({ category: id, query: '', page: 1 }); };
   const search = event => {
     event.preventDefault();
@@ -367,10 +400,23 @@ function SourceBrowser({ api, source, PosterGrid, Status, onOpenHongguo, android
           </div>
         </header>
           <section className="episode-section" aria-label="选集"><header><h2>选集</h2><p>{android && detail.data.episodes.some(episode => !episode.playable) ? '部分分集暂不可播' : '在线播放'}</p></header>
+            {canDownload && <div className="sources-download-bar">
+              <button type="button" className={downloadMode ? "button primary" : "button"} disabled={batch.running} onClick={() => setDownloadMode(value => !value)}>{downloadMode ? '下载模式（点击剧集下载）' : '切换到下载模式'}</button>
+              <button type="button" className="button" disabled={batch.running} onClick={() => { setBatchPanel(value => !value); setBatch(previous => ({ ...previous, message: '' })); }}>{batchPanel ? '收起批量下载' : '批量下载'}</button>
+            </div>}
+            {canDownload && batchPanel && <div className="sources-batch" role="group" aria-label="批量下载">
+              <label>从第 <input type="number" min="1" max={detail.data.episodes.length} value={batchStart} onChange={event => setBatchStart(event.target.value)} /> 集</label>
+              <label>到第 <input type="number" min="1" max={detail.data.episodes.length} value={batchEnd} onChange={event => setBatchEnd(event.target.value)} /> 集</label>
+              <button type="button" className="button primary" disabled={batch.running} onClick={startBatchDownload}>{batch.running ? '下载中…' : '开始下载'}</button>
+              {batch.running && <button type="button" className="button" onClick={() => { batchStop.current = true; }}>停止</button>}
+              {batch.running && <progress value={batch.done} max={batch.total} aria-label="批量下载进度" />}
+              {!!batch.message && <p className="episode-note" role="status">{batch.message}</p>}
+              <p className="sources-note">仅完整视频文件可下载；在线流媒体（m3u8）请在线播放。下载任务可在「下载」页查看与离线播放。</p>
+            </div>}
             {!!play.episodeId && <p className="episode-note" role="status">{android ? "正在读取分集片源，随后打开播放器…" : "正在打开播放器…"}</p>}
             {play.error && <p className="text-error episode-note" role="alert">{play.error}</p>}
             {lineChoices.length > 1 && <div className="sources-variants"><label htmlFor="desktop-source-variant">播放线路<select id="desktop-source-variant" value={play.variant} disabled={!!play.episodeId} onChange={event => setPlay(previous => ({ ...previous, variant: event.target.value }))}><option value="">{publicLines.length ? '站点默认线路' : '自动'}</option>{lineChoices.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>{play.lastEpisodeId && <button type="button" className="button" disabled={!!play.episodeId} onClick={() => { const episode = detail.data.episodes.find(item => item.episodeId === play.lastEpisodeId); if (episode) playEpisode(episode); }}>切换线路并播放</button>}</div>}
-            {detail.data.episodes.length ? <div className="episode-grid">{detail.data.episodes.map(episode => <button type="button" key={episode.episodeId} title={episode.title || `第 ${episode.index} 集`} aria-label={`${episode.title || `第 ${episode.index} 集`}${episode.playable ? '' : '（暂不可播）'}`} disabled={episode.playable !== true || !!play.episodeId} onClick={() => playEpisode(episode)}>{episode.index}</button>)}</div> : <p className="empty-episodes">来源未返回分集。</p>}
+            {detail.data.episodes.length ? <div className="episode-grid">{detail.data.episodes.map(episode => <button type="button" key={episode.episodeId} title={(downloadMode ? '下载' : '播放') + (episode.title || `第 ${episode.index} 集`)} aria-label={`${episode.title || `第 ${episode.index} 集`}${episode.playable ? '' : '（暂不可播）'}`} disabled={episode.playable !== true || !!play.episodeId || batch.running} onClick={() => downloadMode ? downloadEpisode(episode) : playEpisode(episode)}>{episode.index}</button>)}</div> : <p className="empty-episodes">来源未返回分集。</p>}
           </section></>}
       </Status>
     </div>}
