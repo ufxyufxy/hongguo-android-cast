@@ -27,8 +27,8 @@ android {
         // it must stay a plain number here rather than moving fully to flavors.
         minSdk 23
         targetSdk 35
-        versionCode 109
-        versionName '0.12.86'
+        versionCode 114
+        versionName '0.12.91'
         testInstrumentationRunner 'io.github.jackotom.hongguo.android.ProductionPlaybackInstrumentation'
     }
     flavorDimensions 'device'
@@ -41,13 +41,19 @@ android {
         tvNative {
             dimension 'device'
             applicationIdSuffix '.tvnative'
-            versionCode 38
-            versionName '0.1.37'
+            versionCode 42
+            versionName '0.1.41'
             buildConfigField 'boolean', 'IS_TV', 'true'
             buildConfigField 'boolean', 'NATIVE_UI', 'true'
         }
     }
     buildFeatures { buildConfig true }
+    // libhongguo_sdk.so is the SDK playback route's digest adapter (src/main/cpp). CMakeLists.txt
+    // builds it for arm64 only, so other ABIs install without it and keep the signed-request
+    // ladder. The choice is made there and not with ndk.abiFilters, which would also drop the
+    // prebuilt libraries the other ABIs depend on (libVLC in the 32-bit tvNative APK).
+    ndkVersion '28.2.13676358'
+    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.22.1' } }
     // Per-ABI APKs: libVLC ships ~60MB of native libraries per architecture, so the software
     // decoder line ships one APK per ABI and the updater picks by the device's supported ABIs.
     splits {
@@ -99,11 +105,10 @@ dependencies { tvNativeImplementation 'org.videolan.android:libvlc-all:3.6.2' }
 // The v5 model endpoint (player/v1) fingerprints its HTTP client and hollows plain
 // HttpURLConnection requests (HTTP/1.1, no ALPN) with empty 200s; OkHttp negotiates
 // h2 like the working clients. Used only by the registered model transport.
-dependencies { implementation 'com.squareup.okhttp3:okhttp:4.12.0' }
-
-// APK-local source scripts use a bounded interpreter; source media does not change the
-// existing red/huangguo playback paths. Media3 1.8 keeps the current SDK 35 build envelope.
 dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // APK-local source scripts use a bounded interpreter; source media does not change the
+    // existing red/huangguo playback paths. Media3 1.8 keeps the current SDK 35 build envelope.
     implementation 'org.mozilla:rhino:1.8.1'
     implementation 'org.jsoup:jsoup:1.23.2'
     implementation 'androidx.media3:media3-exoplayer:1.8.0'
